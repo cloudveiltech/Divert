@@ -409,6 +409,7 @@ static BOOL WinDivertIoControlEx(HANDLE handle, DWORD code,
     return result;
 }
 
+
 /*
  * Perform a DeviceIoControl.
  */
@@ -484,11 +485,13 @@ HANDLE WinDivertOpen(const char *filter, WINDIVERT_LAYER layer, INT16 priority,
         case WINDIVERT_LAYER_FLOW:
         case WINDIVERT_LAYER_SOCKET:
         case WINDIVERT_LAYER_REFLECT:
+        case WINDIVERT_LAYER_REDIRECT:
             break;
         default:
             SetLastError(ERROR_INVALID_PARAMETER);
             return INVALID_HANDLE_VALUE;
     }
+
     if (!WINDIVERT_FLAGS_VALID(flags))
     {
         SetLastError(ERROR_INVALID_PARAMETER);
@@ -518,6 +521,7 @@ HANDLE WinDivertOpen(const char *filter, WINDIVERT_LAYER layer, INT16 priority,
         SetLastError(err);
         return FALSE;
     }
+
     comp_err = WinDivertCompileFilter(filter, pool, layer, object, &obj_len);
     if (IS_ERROR(comp_err))
     {
@@ -677,7 +681,7 @@ BOOL WinDivertSend(HANDLE handle, const VOID *pPacket, UINT packetLen,
  */
 BOOL WinDivertSendEx(HANDLE handle, const VOID *pPacket, UINT packetLen,
     UINT *writeLen, UINT64 flags, const WINDIVERT_ADDRESS *addr, UINT addrLen,
-    LPOVERLAPPED overlapped)
+    LPOVERLAPPED overlapped)    
 {
     WINDIVERT_IOCTL ioctl;
     memset(&ioctl, 0, sizeof(ioctl));
@@ -744,6 +748,29 @@ BOOL WinDivertGetParam(HANDLE handle, WINDIVERT_PARAM param, UINT64 *pValue)
     return WinDivertIoControl(handle, IOCTL_WINDIVERT_GET_PARAM, &ioctl,
         pValue, sizeof(UINT64), NULL);
 }
+
+
+BOOL WinDivertAddWhitelistedApp(HANDLE handle, UINT8 *appName)
+{
+    WINDIVERT_IOCTL ioctl;
+    memset(&ioctl, 0, sizeof(ioctl));
+    ioctl.set_param.param = WINDIVERT_PARAM_ADD_APP_WHITELIST;
+    strcpy(ioctl.set_param.str, appName);
+    return WinDivertIoControl(handle, IOCTL_WINDIVERT_SET_PARAM, &ioctl, NULL,
+        0, NULL);
+}
+
+BOOL WinDivertAddBlacklistedApp(HANDLE handle, UINT8* appName)
+{
+    WINDIVERT_IOCTL ioctl;
+    memset(&ioctl, 0, sizeof(ioctl));
+    ioctl.set_param.param = WINDIVERT_PARAM_ADD_APP_BLACKLIST;
+    strcpy(ioctl.set_param.str, appName);
+    return WinDivertIoControl(handle, IOCTL_WINDIVERT_SET_PARAM, &ioctl, NULL,
+        0, NULL);
+}
+
+
 
 /*****************************************************************************/
 /* REPLACEMENTS                                                              */

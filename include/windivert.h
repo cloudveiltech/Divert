@@ -79,6 +79,7 @@ typedef enum
     WINDIVERT_LAYER_FLOW = 2,           /* Flow layer. */
     WINDIVERT_LAYER_SOCKET = 3,         /* Socket layer. */
     WINDIVERT_LAYER_REFLECT = 4,        /* Reflect layer. */
+    WINDIVERT_LAYER_REDIRECT = 5,        /* Redirect layer. */
 } WINDIVERT_LAYER, *PWINDIVERT_LAYER;
 
 /*
@@ -207,6 +208,11 @@ typedef enum
     WINDIVERT_PARAM_QUEUE_SIZE = 2,     /* Packet queue size. */
     WINDIVERT_PARAM_VERSION_MAJOR = 3,  /* Driver version (major). */
     WINDIVERT_PARAM_VERSION_MINOR = 4,  /* Driver version (minor). */
+    WINDIVERT_PARAM_PROXY_PORT = 5,  
+    WINDIVERT_PARAM_PROXY_PID = 6,    
+    WINDIVERT_PARAM_ADD_APP_WHITELIST = 7,
+    WINDIVERT_PARAM_ADD_APP_BLACKLIST = 8,
+    WINDIVERT_PARAM_CLEAN_APPS = 9
 } WINDIVERT_PARAM, *PWINDIVERT_PARAM;
 #define WINDIVERT_PARAM_MAX             WINDIVERT_PARAM_VERSION_MINOR
 
@@ -307,6 +313,14 @@ WINDIVERTEXPORT BOOL WinDivertGetParam(
     __in        WINDIVERT_PARAM param,
     __out       UINT64 *pValue);
 
+
+BOOL WinDivertAddWhitelistedApp(
+    __in HANDLE handle, 
+    __in UINT8* appName);
+
+BOOL WinDivertAddBlacklistedApp(
+    __in HANDLE handle, 
+    __in UINT8* appName);
 #endif      /* WINDIVERT_KERNEL */
 
 /*

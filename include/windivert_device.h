@@ -267,6 +267,7 @@ typedef union
     struct
     {
         UINT64 val;                 // Value pointer.
+        UINT8 str[512];
         UINT32 param;               // WINDIVERT_PARAM_*
     } set_param;
 } WINDIVERT_IOCTL, *PWINDIVERT_IOCTL;
@@ -320,6 +321,12 @@ typedef struct
     CTL_CODE(FILE_DEVICE_NETWORK, 0x926, METHOD_OUT_DIRECT, FILE_READ_DATA)
 #define IOCTL_WINDIVERT_SHUTDOWN                                            \
     CTL_CODE(FILE_DEVICE_NETWORK, 0x927, METHOD_IN_DIRECT, FILE_READ_DATA | \
+        FILE_WRITE_DATA)
+#define IOCTL_WINDIVERT_ADD_WHITELIST_APP                                   \
+    CTL_CODE(FILE_DEVICE_NETWORK, 0x928, METHOD_IN_DIRECT, FILE_READ_DATA | \
+        FILE_WRITE_DATA)
+#define IOCTL_WINDIVERT_ADD_BLACKLIST_APP                                   \
+    CTL_CODE(FILE_DEVICE_NETWORK, 0x929, METHOD_IN_DIRECT, FILE_READ_DATA | \
         FILE_WRITE_DATA)
 
 #endif      /* __WINDIVERT_DEVICE_H */

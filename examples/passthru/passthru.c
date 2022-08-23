@@ -62,7 +62,7 @@ static DWORD passthru(LPVOID arg);
  */
 int __cdecl main(int argc, char **argv)
 {
-    const char *filter = "true";
+    const char *filter = "outbound and (tcp.DstPort == 80 or tcp.DstPort == 443 or tcp.DstPort == 8080 or tcp.DstPort == 8443 or udp.DstPort == 80 or udp.DstPort == 443)";
     int threads = 1, batch = 1, priority = 0;
     int i;
     HANDLE handle, thread;
@@ -108,7 +108,7 @@ int __cdecl main(int argc, char **argv)
     }
 
     // Divert traffic matching the filter:
-    handle = WinDivertOpen(filter, WINDIVERT_LAYER_NETWORK, (INT16)priority,
+    handle = WinDivertOpen(filter, WINDIVERT_LAYER_REDIRECT, (INT16)priority,
         0);
     if (handle == INVALID_HANDLE_VALUE)
     {
@@ -121,6 +121,11 @@ int __cdecl main(int argc, char **argv)
             GetLastError());
         exit(EXIT_FAILURE);
     }
+
+    WinDivertSetParam(handle, WINDIVERT_PARAM_PROXY_PORT, 14501);
+    WinDivertSetParam(handle, WINDIVERT_PARAM_PROXY_PID, 12948);
+    WinDivertAddWhitelistedApp(handle, "OpenSpeedTest-Server.exe");
+    WinDivertAddBlacklistedApp(handle, "fiRefox.exe");
 
     // Start the threads
     config.handle = handle;
@@ -146,48 +151,26 @@ int __cdecl main(int argc, char **argv)
 // Passthru thread.
 static DWORD passthru(LPVOID arg)
 {
-    UINT8 *packet;
-    UINT packet_len, recv_len, addr_len;
-    WINDIVERT_ADDRESS *addr;
     PCONFIG config = (PCONFIG)arg;
+    WINDIVERT_ADDRESS addr;
     HANDLE handle;
-    int batch;
-
     handle = config->handle;
-    batch = config->batch;
 
-    packet_len = batch * MTU;
-    packet_len =
-        (packet_len < WINDIVERT_MTU_MAX? WINDIVERT_MTU_MAX: packet_len);
-    packet = (UINT8 *)malloc(packet_len);
-    addr = (WINDIVERT_ADDRESS *)malloc(batch * sizeof(WINDIVERT_ADDRESS));
-    if (packet == NULL || addr == NULL)
-    {
-        fprintf(stderr, "error: failed to allocate buffer (%d)\n",
-            GetLastError());
-        exit(EXIT_FAILURE);
-    }
 
     // Main loop:
     while (TRUE)
     {
         // Read a matching packet.
-        addr_len = batch * sizeof(WINDIVERT_ADDRESS);
-        if (!WinDivertRecvEx(handle, packet, packet_len, &recv_len, 0,
-                addr, &addr_len, NULL))
+        Sleep(1);
+
+        fprintf(stderr, "Waiting\n");
+        if (!WinDivertRecv(handle, NULL, 0, NULL, &addr))
         {
-            fprintf(stderr, "warning: failed to read packet (%d)\n",
-                GetLastError());
+            fprintf(stderr, "failed to read packet (%d)\n", GetLastError());
             continue;
         }
-
-        // Re-inject the matching packet.
-        if (!WinDivertSendEx(handle, packet, recv_len, NULL, 0, addr,
-                addr_len, NULL))
-        {
-            fprintf(stderr, "warning: failed to reinject packet (%d)\n",
-                GetLastError());
-        }
+        
+        fprintf(stderr, "Received an event local %d, remote %d\n", addr.Flow.LocalPort, addr.Flow.RemotePort);
     }
 }
 

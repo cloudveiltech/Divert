@@ -808,6 +808,9 @@ BOOL WinDivertHelperDecrementTTL(VOID *packet, UINT packetLen)
  */
 static BOOL WinDivertValidateField(WINDIVERT_LAYER layer, UINT32 field)
 {
+    if (layer == WINDIVERT_LAYER_REDIRECT) {
+        return TRUE;
+    }
     static const UINT8 flags[] =
     {
         LNMFSR,     /* WINDIVERT_FILTER_FIELD_ZERO */

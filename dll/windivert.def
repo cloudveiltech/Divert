@@ -9,6 +9,8 @@ EXPORTS
     WinDivertClose
     WinDivertSetParam
     WinDivertGetParam
+	WinDivertAddWhitelistedApp
+	WinDivertAddBlacklistedApp
     WinDivertHelperCalcChecksums
     WinDivertHelperDecrementTTL
     WinDivertHelperHashPacket
