@@ -104,6 +104,7 @@ static void DEBUG_BOUNDS_CHECK(PVOID start, PVOID end, PVOID access_start,
 #define APP_STATUS_UNSET                         -1
 #define APP_CACHE_SIZE  100
 #define APP_CACHE_TIMEOUT_MS  60*1000
+//#define APP_CACHE_ENABLED
 /*
  * WinDivert reflect event.
  */
@@ -164,7 +165,9 @@ struct context_s
     LIST_ENTRY packet_queue;                    // Packet queue.
     LIST_ENTRY apps_whitelist;                  // Apps whitelist
     LIST_ENTRY apps_blacklist;                  // Apps blacklist
+#ifdef APP_CACHE_ENABLED
     app_cache_item app_status_cache[APP_CACHE_SIZE];
+#endif
     ULONGLONG work_queue_length;                // Work queue length.
     ULONGLONG packet_queue_length;              // Packet queue length.
     ULONGLONG packet_queue_maxlength;           // Packet queue max length.
@@ -6405,6 +6408,7 @@ static BOOL windivert_filter(PNET_BUFFER buffer, WINDIVERT_LAYER layer,
     return (result == 1);
 }
 
+#ifdef APP_CACHE_ENABLED
 static BOOL chek_app_cache(context_t context, const UINT64 process_id, int *res)
 {
     int i = 0;
@@ -6447,7 +6451,7 @@ static void put_app_cache(context_t context, const UINT64 process_id, int status
         }
     }
 }
-
+#endif
 static int get_app_status(context_t context, const UINT64 process_id, BOOL check_whitelist, BOOL check_blacklist)
 {
     UNREFERENCED_PARAMETER(process_id);
@@ -6461,17 +6465,18 @@ static int get_app_status(context_t context, const UINT64 process_id, BOOL check
     NTSTATUS status;
 
     KeAcquireInStackQueuedSpinLock(&context->lock, &lock_handle);
+#ifdef APP_CACHE_ENABLED
     if (context->local_proxy_pid == process_id)
     {
         KeReleaseInStackQueuedSpinLock(&lock_handle);
         return APP_STATUS_ALLOWED;
     }
-  /*  if (chek_app_cache(context, process_id, &cached_status))
+    if (chek_app_cache(context, process_id, &cached_status))
     {
         KeReleaseInStackQueuedSpinLock(&lock_handle);
         return cached_status;
     }
-  */
+#endif 
     status = GetProcessImageName(process_id, process_name);
    if (!NT_SUCCESS(status)) {
         DEBUG("error getting process name %d", status);
@@ -6498,7 +6503,9 @@ static int get_app_status(context_t context, const UINT64 process_id, BOOL check
                 if (strstr(process_name, app_list->names[i]))
                 {
                     DEBUG("Process blocked %s", process_name);
+#ifdef APP_CACHE_ENABLED
                     put_app_cache(context, process_id, APP_STATUS_BLOCKED);
+#endif 
                     KeReleaseInStackQueuedSpinLock(&lock_handle);
                     return APP_STATUS_BLOCKED;
                 }
@@ -6519,7 +6526,9 @@ static int get_app_status(context_t context, const UINT64 process_id, BOOL check
                 if (strstr(process_name, app_list->names[i]))
                 {
                     DEBUG("Process allowed %s", process_name);
+#ifdef APP_CACHE_ENABLED
                     put_app_cache(context, process_id, APP_STATUS_ALLOWED);
+#endif 
                     KeReleaseInStackQueuedSpinLock(&lock_handle);
                     return APP_STATUS_ALLOWED;
                 }
@@ -6529,7 +6538,9 @@ static int get_app_status(context_t context, const UINT64 process_id, BOOL check
     }
 
     DEBUG("Process unset %s", process_name);
+#ifdef APP_CACHE_ENABLED
     put_app_cache(context, process_id, APP_STATUS_UNSET);
+#endif 
     KeReleaseInStackQueuedSpinLock(&lock_handle);
     return APP_STATUS_UNSET;
 }
