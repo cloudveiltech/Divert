@@ -124,8 +124,7 @@ int __cdecl main(int argc, char **argv)
 
     WinDivertSetParam(handle, WINDIVERT_PARAM_PROXY_PORT, 14501);
     WinDivertSetParam(handle, WINDIVERT_PARAM_PROXY_PID, 12948);
-    WinDivertAddWhitelistedApp(handle, "OpenSpeedTest-Server.exe");
-    WinDivertAddBlacklistedApp(handle, "fiRefox.exe");
+    WinDivertAddWhitelistedApp(handle, "fiRefox.exe");
 
     // Start the threads
     config.handle = handle;

@@ -43,6 +43,7 @@
 #include <mstcpip.h>
 
 #define INITGUID
+#define APP_CACHE_ENABLED
 #include <guiddef.h>
 
 #include "windivert_device.h"
@@ -102,8 +103,8 @@ static void DEBUG_BOUNDS_CHECK(PVOID start, PVOID end, PVOID access_start,
 #define APP_STATUS_ALLOWED                        1
 #define APP_STATUS_BLOCKED                        0
 #define APP_STATUS_UNSET                         -1
-#define APP_CACHE_SIZE  100
-#define APP_CACHE_TIMEOUT_MS  60*1000
+#define APP_CACHE_SIZE  1000
+#define APP_CACHE_TIMEOUT_MS  30*60*1000
 //#define APP_CACHE_ENABLED
 /*
  * WinDivert reflect event.
@@ -165,6 +166,7 @@ struct context_s
     LIST_ENTRY packet_queue;                    // Packet queue.
     LIST_ENTRY apps_whitelist;                  // Apps whitelist
     LIST_ENTRY apps_blacklist;                  // Apps blacklist
+    int blacklist_mode;
 #ifdef APP_CACHE_ENABLED
     app_cache_item app_status_cache[APP_CACHE_SIZE];
 #endif
@@ -503,7 +505,7 @@ static void windivert_flow_established_classify(context_t context,
     IN BOOL outbound, IN BOOL loopback, OUT FWPS_CLASSIFY_OUT0 *result);
 static void windivert_flow_delete_notify(UINT16 layer_id, UINT32 callout_id,
     UINT64 flow_context);
-static void windivert_socket_classify(context_t context,
+static void windivert_socket_classify(context_t context, FWPS_INCOMING_METADATA_VALUES0* meta_vals,
     PWINDIVERT_DATA_SOCKET socket_data, WINDIVERT_EVENT event, BOOL ipv4,
     BOOL outbound, BOOL loopback, FWPS_CLASSIFY_OUT0 *result);
 static void windivert_network_classify(context_t context,
@@ -556,8 +558,11 @@ extern void windivert_reflect_worker(IN WDFWORKITEM item);
 static void windivert_log_event(PEPROCESS process, PDRIVER_OBJECT driver,
     const wchar_t *msg_str);
 
-static int get_app_status(context_t context, const UINT64 process_id, BOOL check_whitelist, BOOL check_blacklist);
+static int get_app_status(context_t context, const UINT64 process_id, FWP_BYTE_BLOB* process_name_param);
 static void insert_app(PLIST_ENTRY entry, INT8* process_path);
+#ifdef APP_CACHE_ENABLED 
+static void reset_app_cache(context_t context);
+#endif
 
 /* 
  * WinDivert provider GUIDs
@@ -1659,6 +1664,7 @@ extern VOID windivert_create(IN WDFDEVICE device, IN WDFREQUEST request,
     InitializeListHead(&context->packet_queue);
     InitializeListHead(&context->apps_whitelist);
     InitializeListHead(&context->apps_blacklist);
+    context->blacklist_mode = 0;
 
     for (i = 0; i < WINDIVERT_CONTEXT_MAXLAYERS; i++)
     {
@@ -3612,6 +3618,7 @@ windivert_ioctl_bad_flags:
                     DEBUG("PID IS %d", value);
                     break;
                 case WINDIVERT_PARAM_CLEAN_APPS:
+                    DEBUG("Cleaning APP LISTS");
                     while (!IsListEmpty(&context->apps_whitelist))
                     {
                         RemoveHeadList(&context->apps_whitelist);
@@ -3620,12 +3627,15 @@ windivert_ioctl_bad_flags:
                     {
                         RemoveHeadList(&context->apps_blacklist);
                     }
+                    reset_app_cache(context);
+                    context->blacklist_mode = 0;
                     break;
                 case WINDIVERT_PARAM_ADD_APP_WHITELIST:
                     insert_app(&context->apps_whitelist, ioctl->set_param.str);
                     break;
                 case WINDIVERT_PARAM_ADD_APP_BLACKLIST:
                     insert_app(&context->apps_blacklist, ioctl->set_param.str);
+                    context->blacklist_mode = 1;
                     break;
                 default:
                     KeReleaseInStackQueuedSpinLock(&lock_handle);
@@ -4577,7 +4587,7 @@ static void windivert_resource_assignment_v4_classify(
         FWPS_FIELD_ALE_RESOURCE_ASSIGNMENT_V4_FLAGS) &
         FWP_CONDITION_FLAG_IS_LOOPBACK) != 0);
 
-    windivert_socket_classify(context, &socket_data,
+    windivert_socket_classify(context, meta_vals, &socket_data,
         /*event=*/WINDIVERT_EVENT_SOCKET_BIND, /*ipv4=*/TRUE,
         /*outbound=*/TRUE, loopback, result);
 }
@@ -4620,7 +4630,7 @@ static void windivert_resource_assignment_v6_classify(
         FWPS_FIELD_ALE_RESOURCE_ASSIGNMENT_V6_FLAGS) &
         FWP_CONDITION_FLAG_IS_LOOPBACK) != 0);
 
-    windivert_socket_classify(context, &socket_data,
+    windivert_socket_classify(context, meta_vals, &socket_data,
         /*event=*/WINDIVERT_EVENT_SOCKET_BIND, /*ipv4=*/FALSE,
         /*outbound=*/TRUE, loopback, result);
 }
@@ -4658,7 +4668,7 @@ static void windivert_resource_release_v4_classify(
         FWPS_FIELD_ALE_RESOURCE_RELEASE_V4_FLAGS) &
         FWP_CONDITION_FLAG_IS_LOOPBACK) != 0);
 
-    windivert_socket_classify(context, &socket_data,
+    windivert_socket_classify(context, meta_vals, &socket_data,
         /*event=*/WINDIVERT_EVENT_SOCKET_CLOSE, /*ipv4=*/TRUE,
         /*outbound=*/TRUE, loopback, result);
 }
@@ -4696,7 +4706,7 @@ static void windivert_resource_release_v6_classify(
         FWPS_FIELD_ALE_RESOURCE_RELEASE_V6_FLAGS) &
         FWP_CONDITION_FLAG_IS_LOOPBACK) != 0);
 
-    windivert_socket_classify(context, &socket_data,
+    windivert_socket_classify(context, meta_vals, &socket_data,
         /*event=*/WINDIVERT_EVENT_SOCKET_CLOSE, /*ipv4=*/FALSE,
         /*outbound=*/TRUE, loopback, result);
 }
@@ -4747,7 +4757,7 @@ static void windivert_auth_connect_v4_classify(
 
     loopback = ((flags & FWP_CONDITION_FLAG_IS_LOOPBACK) != 0);
 
-    windivert_socket_classify(context, &socket_data,
+    windivert_socket_classify(context, meta_vals, &socket_data,
         /*event=*/WINDIVERT_EVENT_SOCKET_CONNECT, /*ipv4=*/TRUE,
         /*outbound=*/TRUE, loopback, result);
 }
@@ -4799,7 +4809,7 @@ static void windivert_auth_connect_v6_classify(
 
     loopback = ((flags & FWP_CONDITION_FLAG_IS_LOOPBACK) != 0);
 
-    windivert_socket_classify(context, &socket_data,
+    windivert_socket_classify(context, meta_vals, &socket_data,
         /*event=*/WINDIVERT_EVENT_SOCKET_CONNECT, /*ipv4=*/FALSE,
         /*outbound=*/TRUE, loopback, result);
 }
@@ -4840,7 +4850,7 @@ static void windivert_endpoint_closure_v4_classify(
         FWPS_FIELD_ALE_ENDPOINT_CLOSURE_V4_FLAGS) &
         FWP_CONDITION_FLAG_IS_LOOPBACK) != 0);
 
-    windivert_socket_classify(context, &socket_data,
+    windivert_socket_classify(context, meta_vals, &socket_data,
         /*event=*/WINDIVERT_EVENT_SOCKET_CLOSE, /*ipv4=*/TRUE,
         /*outbound=*/TRUE, loopback, result);
 }
@@ -4881,7 +4891,7 @@ static void windivert_endpoint_closure_v6_classify(
         FWPS_FIELD_ALE_ENDPOINT_CLOSURE_V6_FLAGS) &
         FWP_CONDITION_FLAG_IS_LOOPBACK) != 0);
 
-    windivert_socket_classify(context, &socket_data,
+    windivert_socket_classify(context, meta_vals, &socket_data,
         /*event=*/WINDIVERT_EVENT_SOCKET_CLOSE, /*ipv4=*/FALSE,
         /*outbound=*/TRUE, loopback, result);
 }
@@ -4923,7 +4933,7 @@ static void windivert_auth_listen_v4_classify(
         FWPS_FIELD_ALE_AUTH_LISTEN_V4_FLAGS) &
         FWP_CONDITION_FLAG_IS_LOOPBACK) != 0);
 
-    windivert_socket_classify(context, &socket_data,
+    windivert_socket_classify(context, meta_vals, &socket_data,
         /*event=*/WINDIVERT_EVENT_SOCKET_LISTEN, /*ipv4=*/TRUE,
         /*outbound=*/TRUE, loopback, result);
 }
@@ -4965,7 +4975,7 @@ static void windivert_auth_listen_v6_classify(
         FWPS_FIELD_ALE_AUTH_LISTEN_V6_FLAGS) &
         FWP_CONDITION_FLAG_IS_LOOPBACK) != 0);
 
-    windivert_socket_classify(context, &socket_data,
+    windivert_socket_classify(context, meta_vals, &socket_data,
         /*event=*/WINDIVERT_EVENT_SOCKET_LISTEN, /*ipv4=*/FALSE,
         /*outbound=*/TRUE, loopback, result);
 }
@@ -5017,7 +5027,7 @@ static void windivert_auth_recv_accept_v4_classify(
 
     loopback = ((flags & FWP_CONDITION_FLAG_IS_LOOPBACK) != 0);
 
-    windivert_socket_classify(context, &socket_data,
+    windivert_socket_classify(context, meta_vals, &socket_data,
         /*event=*/WINDIVERT_EVENT_SOCKET_ACCEPT, /*ipv4=*/TRUE,
         /*outbound=*/FALSE, loopback, result);
 }
@@ -5069,7 +5079,7 @@ static void windivert_auth_recv_accept_v6_classify(
 
     loopback = ((flags & FWP_CONDITION_FLAG_IS_LOOPBACK) != 0);
 
-    windivert_socket_classify(context, &socket_data,
+    windivert_socket_classify(context, meta_vals->processPath, &socket_data,
         /*event=*/WINDIVERT_EVENT_SOCKET_ACCEPT, /*ipv4=*/FALSE,
         /*outbound=*/FALSE, loopback, result);
 }
@@ -5077,7 +5087,7 @@ static void windivert_auth_recv_accept_v6_classify(
 /*
  * WinDivert socket classify function.
  */
-static void windivert_socket_classify(context_t context,
+static void windivert_socket_classify(context_t context, FWPS_INCOMING_METADATA_VALUES0* meta_vals,
     PWINDIVERT_DATA_SOCKET socket_data, WINDIVERT_EVENT event, BOOL ipv4,
     BOOL outbound, BOOL loopback, FWPS_CLASSIFY_OUT0 *result)
 {
@@ -5099,13 +5109,8 @@ static void windivert_socket_classify(context_t context,
     if (context->layer == WINDIVERT_LAYER_REDIRECT)
     {
         int app_status = APP_STATUS_UNSET;
-        app_status = get_app_status(context, socket_data->ProcessId, FALSE, TRUE);
-        if (app_status == APP_STATUS_BLOCKED)
-        {
-            result->actionType = FWP_ACTION_BLOCK;
-            result->flags |= FWPS_CLASSIFY_OUT_FLAG_ABSORB;
-            result->rights &= ~FWPS_RIGHT_ACTION_WRITE;
-        }
+
+        app_status = get_app_status(context, socket_data->ProcessId, meta_vals->processPath == NULL ? NULL : meta_vals->processPath);
         return;
     }
 
@@ -5147,81 +5152,6 @@ static void windivert_socket_classify(context_t context,
         result->flags |= FWPS_CLASSIFY_OUT_FLAG_ABSORB;
         result->rights &= ~FWPS_RIGHT_ACTION_WRITE;
     }
-}
-
-
-NTSTATUS GetProcessImageName(UINT64 pid, char* name)
-{
-    NTSTATUS status;
-    ULONG returned_length;
-    ULONG buffer_length;
-    PVOID buffer;
-    PUNICODE_STRING image_name;
-    HANDLE process_handle;
-
-    OBJECT_ATTRIBUTES obj_attribs;
-    CLIENT_ID cid;
-    ANSI_STRING str;
-
-    cid.UniqueProcess = pid;
-    cid.UniqueThread = NULL;
-    InitializeObjectAttributes(&obj_attribs, NULL, 0, NULL, NULL);
-    status = ZwOpenProcess(&process_handle, 0x1000/*Query limited info*/, &obj_attribs, &cid);
-    if (!NT_SUCCESS(status))
-    {
-        return status;
-    }
-
-    status = ZwQueryInformationProcess(process_handle,
-        ProcessImageFileName,
-        NULL, // buffer
-        0, // buffer size
-        &returned_length);
-
-    if (STATUS_INFO_LENGTH_MISMATCH != status) 
-    {
-        ZwClose(process_handle);
-        return status;
-    }
-
-    buffer_length = returned_length - sizeof(UNICODE_STRING);
-    buffer = windivert_malloc(returned_length, FALSE);
-    if (NULL == buffer) 
-    {
-        ZwClose(process_handle);
-        return STATUS_INSUFFICIENT_RESOURCES;
-    }
-
-    status = ZwQueryInformationProcess(process_handle,
-        ProcessImageFileName,
-        buffer,
-        returned_length,
-        &returned_length);
-
-    ZwClose(process_handle);
-    if (NT_SUCCESS(status)) 
-    {
-        image_name = (PUNICODE_STRING)buffer;
-        if (image_name->Length > 0)
-        {
-            if (image_name->Length > MAX_STRING_LENGTH) 
-            {
-                image_name->Length = MAX_STRING_LENGTH;
-            }
-            str.Length = 0;
-            str.MaximumLength = MAX_STRING_LENGTH - 1;
-            str.Buffer = name;
-            status = RtlUnicodeStringToAnsiString(&str, image_name, FALSE);
-            if (NT_SUCCESS(status))
-            {
-                int len = min(str.Length, MAX_STRING_LENGTH);
-                name[len] = ANSI_NULL;
-            }
-        }
-    }
-
-    windivert_free(buffer);
-    return status;
 }
 
 static void windivert_connect_redirect_classify(
@@ -5275,7 +5205,7 @@ static void windivert_connect_redirect_classify(
     }
 
     KeReleaseInStackQueuedSpinLock(&lock_handle);
-    app_status = get_app_status(context, meta_vals->processId, TRUE, FALSE);
+    app_status = get_app_status(context, meta_vals->processId, NULL);
     if (app_status == APP_STATUS_ALLOWED)
     {
         WdfObjectDereference(object);
@@ -6451,8 +6381,18 @@ static void put_app_cache(context_t context, const UINT64 process_id, int status
         }
     }
 }
+
+static void reset_app_cache(context_t context)
+{
+    int i = 0;
+    for (i = 0; i < APP_CACHE_SIZE; i++)
+    {
+        context->app_status_cache[i].pid = 0;
+    }
+}
 #endif
-static int get_app_status(context_t context, const UINT64 process_id, BOOL check_whitelist, BOOL check_blacklist)
+
+static int get_app_status(context_t context, const UINT64 process_id, FWP_BYTE_BLOB* process_name_param)
 {
     UNREFERENCED_PARAMETER(process_id);
 
@@ -6460,9 +6400,10 @@ static int get_app_status(context_t context, const UINT64 process_id, BOOL check
     PLIST_ENTRY list;
     app_t app_list;
     int i = 0;
+    int status = APP_STATUS_UNSET;
     char process_name[MAX_STRING_LENGTH];
     int cached_status = APP_STATUS_UNSET;
-    NTSTATUS status;
+    wchar_t c = 0;
 
     KeAcquireInStackQueuedSpinLock(&context->lock, &lock_handle);
 #ifdef APP_CACHE_ENABLED
@@ -6477,72 +6418,75 @@ static int get_app_status(context_t context, const UINT64 process_id, BOOL check
         return cached_status;
     }
 #endif 
-    status = GetProcessImageName(process_id, process_name);
-   if (!NT_SUCCESS(status)) {
-        DEBUG("error getting process name %d", status);
+    if (process_name_param == NULL)
+    {
         KeReleaseInStackQueuedSpinLock(&lock_handle);
-        return APP_STATUS_UNSET;
+        return cached_status;
+    };
+
+    for (i = 0; i < process_name_param->size/2 && i < MAX_STRING_LENGTH; i++)
+    {
+        c = *(&process_name_param->data[2 * i]);
+        process_name[i] = (char)c;
+    }
+    if (process_name_param->size < MAX_STRING_LENGTH)
+    {
+        process_name[process_name_param->size] = ANSI_NULL;
+    }
+    else 
+    {
+        process_name[MAX_STRING_LENGTH - 1] = ANSI_NULL;
     }
 
-    process_name[MAX_STRING_LENGTH - 1] = ANSI_NULL;
-
-    for (i = 0; i<strlen(process_name) && i < MAX_STRING_LENGTH; i++) 
+    list = &context->apps_blacklist;
+    while (list->Flink != &context->apps_blacklist)
     {
-        process_name[i] = tolower(process_name[i]);
-    }
+        app_list = CONTAINING_RECORD(list->Blink, struct app_s, entry);
 
-    if (check_blacklist)
-    {
-        list = &context->apps_blacklist;
-        while (list->Flink != &context->apps_blacklist)
+        for (i = 0; i < APPS_CHUNK_SIZE && app_list->names[i][0] != '\0'; i++)
         {
-            app_list = CONTAINING_RECORD(list->Blink, struct app_s, entry);
-
-            for (i = 0; i < APPS_CHUNK_SIZE && app_list->names[i][0] != '\0'; i++)
+            if (strstr(process_name, app_list->names[i]))
             {
-                if (strstr(process_name, app_list->names[i]))
-                {
-                    DEBUG("Process blocked %s", process_name);
-#ifdef APP_CACHE_ENABLED
-                    put_app_cache(context, process_id, APP_STATUS_BLOCKED);
-#endif 
-                    KeReleaseInStackQueuedSpinLock(&lock_handle);
-                    return APP_STATUS_BLOCKED;
-                }
+                status = APP_STATUS_BLOCKED;
             }
-            list = list->Flink;
         }
+        list = list->Flink;
     }
 
-    if (check_whitelist)
+    list = &context->apps_whitelist;
+    while (list->Flink != &context->apps_whitelist)
     {
-        list = &context->apps_whitelist;
-        while (list->Flink != &context->apps_whitelist)
+        app_list = CONTAINING_RECORD(list->Blink, struct app_s, entry);
+
+        for (i = 0; i < APPS_CHUNK_SIZE && app_list->names[i][0] != '\0'; i++)
         {
-            app_list = CONTAINING_RECORD(list->Blink, struct app_s, entry);
-
-            for (i = 0; i < APPS_CHUNK_SIZE && app_list->names[i][0] != '\0'; i++)
+            if (strstr(process_name, app_list->names[i]))
             {
-                if (strstr(process_name, app_list->names[i]))
-                {
-                    DEBUG("Process allowed %s", process_name);
-#ifdef APP_CACHE_ENABLED
-                    put_app_cache(context, process_id, APP_STATUS_ALLOWED);
-#endif 
-                    KeReleaseInStackQueuedSpinLock(&lock_handle);
-                    return APP_STATUS_ALLOWED;
-                }
+                status = APP_STATUS_ALLOWED;
             }
-            list = list->Flink;
         }
+        list = list->Flink;
     }
+    
+    if (context->blacklist_mode) 
+    {
+        if (status == APP_STATUS_UNSET) 
+        {
+            status = APP_STATUS_ALLOWED;
+        }
+        else if (status == APP_STATUS_BLOCKED) 
+        {
+            status = APP_STATUS_UNSET; //FILTER
+        }
+    } 
 
-    DEBUG("Process unset %s", process_name);
 #ifdef APP_CACHE_ENABLED
-    put_app_cache(context, process_id, APP_STATUS_UNSET);
+    put_app_cache(context, process_id, status);
 #endif 
     KeReleaseInStackQueuedSpinLock(&lock_handle);
-    return APP_STATUS_UNSET;
+
+    DEBUG("Process status %s %d", process_name, status);
+    return status;
 }
 
 
@@ -6585,7 +6529,6 @@ static void insert_app(PLIST_ENTRY list, INT8* process_path)
         if (app_list->names[i][0] == '\0')
         {
             DEBUG("INSERT NEW APP INTO THE LIST %d, %s", i, process_path);
-            strcpy(app_list->names[i], process_path);
             break;
         }
         else if (strcmp(app_list->names[i], process_path) == 0) 
