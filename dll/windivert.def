@@ -11,6 +11,10 @@ EXPORTS
     WinDivertGetParam
 	WinDivertAddWhitelistedApp
 	WinDivertAddBlacklistedApp
+	WinDivertAddBlockedApp
+	WinDivertAddWhitelistedPID
+	WinDivertAddBlacklistedPID
+	WinDivertAddBlockedPID
     WinDivertHelperCalcChecksums
     WinDivertHelperDecrementTTL
     WinDivertHelperHashPacket

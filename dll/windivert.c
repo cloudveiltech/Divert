@@ -770,7 +770,47 @@ BOOL WinDivertAddBlacklistedApp(HANDLE handle, UINT8* appName)
         0, NULL);
 }
 
+BOOL WinDivertAddBlockedApp(HANDLE handle, UINT8* appName)
+{
+    WINDIVERT_IOCTL ioctl;
+    memset(&ioctl, 0, sizeof(ioctl));
+    ioctl.set_param.param = WINDIVERT_PARAM_ADD_APP_BLOCKED;
+    strcpy(ioctl.set_param.str, appName);
+    return WinDivertIoControl(handle, IOCTL_WINDIVERT_SET_PARAM, &ioctl, NULL,
+        0, NULL);
+}
 
+
+
+BOOL WinDivertAddWhitelistedPID(HANDLE handle, UINT64 pid)
+{
+    WINDIVERT_IOCTL ioctl;
+    memset(&ioctl, 0, sizeof(ioctl));
+    ioctl.set_param.param = WINDIVERT_PARAM_ADD_PID_WHITELIST;
+    ioctl.set_param.val = pid;
+    return WinDivertIoControl(handle, IOCTL_WINDIVERT_SET_PARAM, &ioctl, NULL,
+        0, NULL);
+}
+
+BOOL WinDivertAddBlacklistedPID(HANDLE handle, UINT64 pid)
+{
+    WINDIVERT_IOCTL ioctl;
+    memset(&ioctl, 0, sizeof(ioctl));
+    ioctl.set_param.param = WINDIVERT_PARAM_ADD_PID_BLACKLIST;
+    ioctl.set_param.val = pid;
+    return WinDivertIoControl(handle, IOCTL_WINDIVERT_SET_PARAM, &ioctl, NULL,
+        0, NULL);
+}
+
+BOOL WinDivertAddBlockedPID(HANDLE handle, UINT64 pid)
+{
+    WINDIVERT_IOCTL ioctl;
+    memset(&ioctl, 0, sizeof(ioctl));
+    ioctl.set_param.param = WINDIVERT_PARAM_ADD_PID_BLOCKED;
+    ioctl.set_param.val = pid;
+    return WinDivertIoControl(handle, IOCTL_WINDIVERT_SET_PARAM, &ioctl, NULL,
+        0, NULL);
+}
 
 /*****************************************************************************/
 /* REPLACEMENTS                                                              */

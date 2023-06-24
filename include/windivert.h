@@ -212,7 +212,11 @@ typedef enum
     WINDIVERT_PARAM_PROXY_PID = 6,    
     WINDIVERT_PARAM_ADD_APP_WHITELIST = 7,
     WINDIVERT_PARAM_ADD_APP_BLACKLIST = 8,
-    WINDIVERT_PARAM_CLEAN_APPS = 9
+    WINDIVERT_PARAM_ADD_APP_BLOCKED = 9,
+    WINDIVERT_PARAM_CLEAN_APPS = 10,
+    WINDIVERT_PARAM_ADD_PID_WHITELIST = 11,
+    WINDIVERT_PARAM_ADD_PID_BLACKLIST = 12,
+    WINDIVERT_PARAM_ADD_PID_BLOCKED = 13
 } WINDIVERT_PARAM, *PWINDIVERT_PARAM;
 #define WINDIVERT_PARAM_MAX             WINDIVERT_PARAM_VERSION_MINOR
 
@@ -314,13 +318,29 @@ WINDIVERTEXPORT BOOL WinDivertGetParam(
     __out       UINT64 *pValue);
 
 
-BOOL WinDivertAddWhitelistedApp(
+WINDIVERTEXPORT BOOL WinDivertAddWhitelistedApp(
     __in HANDLE handle, 
     __in UINT8* appName);
 
-BOOL WinDivertAddBlacklistedApp(
+WINDIVERTEXPORT BOOL WinDivertAddBlacklistedApp(
     __in HANDLE handle, 
     __in UINT8* appName);
+
+WINDIVERTEXPORT BOOL WinDivertAddBlockedApp(
+    __in HANDLE handle,
+    __in UINT8* appName);
+
+WINDIVERTEXPORT BOOL WinDivertAddWhitelistedPID(
+    __in HANDLE handle,
+    __in UINT64 pid);
+
+WINDIVERTEXPORT BOOL WinDivertAddBlacklistedPID(
+    __in HANDLE handle,
+    __in UINT64 pid);
+
+WINDIVERTEXPORT BOOL WinDivertAddBlockedPID(
+    __in HANDLE handle,
+    __in UINT64 pid);
 #endif      /* WINDIVERT_KERNEL */
 
 /*

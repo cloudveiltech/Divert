@@ -44,6 +44,7 @@
 
 #define INITGUID
 #define APP_CACHE_ENABLED
+#define SYSTEM_PID 4
 #include <guiddef.h>
 
 #include "windivert_device.h"
@@ -103,9 +104,8 @@ static void DEBUG_BOUNDS_CHECK(PVOID start, PVOID end, PVOID access_start,
 #define APP_STATUS_ALLOWED                        1
 #define APP_STATUS_BLOCKED                        0
 #define APP_STATUS_UNSET                         -1
-#define APP_CACHE_SIZE  1000
-#define APP_CACHE_TIMEOUT_MS  30*60*1000
-//#define APP_CACHE_ENABLED
+#define APP_CACHE_SIZE  10000
+#define APP_CACHE_TIMEOUT_MS  3600*60*1000
 /*
  * WinDivert reflect event.
  */
@@ -166,7 +166,7 @@ struct context_s
     LIST_ENTRY packet_queue;                    // Packet queue.
     LIST_ENTRY apps_whitelist;                  // Apps whitelist
     LIST_ENTRY apps_blacklist;                  // Apps blacklist
-    int blacklist_mode;
+    LIST_ENTRY apps_blocked;                    // Apps blocked
 #ifdef APP_CACHE_ENABLED
     app_cache_item app_status_cache[APP_CACHE_SIZE];
 #endif
@@ -562,6 +562,7 @@ static int get_app_status(context_t context, const UINT64 process_id, FWP_BYTE_B
 static void insert_app(PLIST_ENTRY entry, INT8* process_path);
 #ifdef APP_CACHE_ENABLED 
 static void reset_app_cache(context_t context);
+static void put_app_cache(context_t context, const UINT64 process_id, int status);
 #endif
 
 /* 
@@ -1664,7 +1665,7 @@ extern VOID windivert_create(IN WDFDEVICE device, IN WDFREQUEST request,
     InitializeListHead(&context->packet_queue);
     InitializeListHead(&context->apps_whitelist);
     InitializeListHead(&context->apps_blacklist);
-    context->blacklist_mode = 0;
+    InitializeListHead(&context->apps_blocked);
 
     for (i = 0; i < WINDIVERT_CONTEXT_MAXLAYERS; i++)
     {
@@ -3265,8 +3266,6 @@ extern VOID windivert_ioctl(IN WDFQUEUE queue, IN WDFREQUEST request,
     UNREFERENCED_PARAMETER(out_length);
     UNREFERENCED_PARAMETER(in_length);
 
-    DEBUG("IOCTL: I/O control request (context=%p)", context);
-
     // Get the buffers and do sanity checks.
     switch (code)
     {
@@ -3567,6 +3566,8 @@ windivert_ioctl_bad_flags:
                 status = STATUS_INVALID_DEVICE_STATE;
                 goto windivert_ioctl_exit;
             }
+
+            DEBUG("PARAM %d", param);
             switch ((UINT32)param)
             {
                 case WINDIVERT_PARAM_QUEUE_LENGTH:
@@ -3627,15 +3628,41 @@ windivert_ioctl_bad_flags:
                     {
                         RemoveHeadList(&context->apps_blacklist);
                     }
+                    while (!IsListEmpty(&context->apps_blocked))
+                    {
+                        RemoveHeadList(&context->apps_blocked);
+                    }
+#ifdef APP_CACHE_ENABLED
                     reset_app_cache(context);
-                    context->blacklist_mode = 0;
+#endif
                     break;
-                case WINDIVERT_PARAM_ADD_APP_WHITELIST:
+                case WINDIVERT_PARAM_ADD_APP_WHITELIST:       
+
                     insert_app(&context->apps_whitelist, ioctl->set_param.str);
                     break;
                 case WINDIVERT_PARAM_ADD_APP_BLACKLIST:
                     insert_app(&context->apps_blacklist, ioctl->set_param.str);
-                    context->blacklist_mode = 1;
+                    break;
+                case WINDIVERT_PARAM_ADD_APP_BLOCKED:
+                    insert_app(&context->apps_blocked, ioctl->set_param.str);
+                    break;
+                case WINDIVERT_PARAM_ADD_PID_WHITELIST:
+                    DEBUG("SET WHITELIST FOR PID %d", (int)value);
+#ifdef APP_CACHE_ENABLED
+                    put_app_cache(context, value, APP_STATUS_ALLOWED);
+#endif
+                    break;
+                case WINDIVERT_PARAM_ADD_PID_BLACKLIST:
+                    DEBUG("SET BLACKLIST FOR PID %d", (int)value);
+#ifdef APP_CACHE_ENABLED
+                    put_app_cache(context, value, APP_STATUS_UNSET);
+#endif
+                    break;
+                case WINDIVERT_PARAM_ADD_PID_BLOCKED:
+                    DEBUG("SET BLOCKED FOR PID %d", (int)value);
+#ifdef APP_CACHE_ENABLED
+                    put_app_cache(context, value, APP_STATUS_BLOCKED);
+#endif
                     break;
                 default:
                     KeReleaseInStackQueuedSpinLock(&lock_handle);
@@ -5111,6 +5138,12 @@ static void windivert_socket_classify(context_t context, FWPS_INCOMING_METADATA_
         int app_status = APP_STATUS_UNSET;
 
         app_status = get_app_status(context, socket_data->ProcessId, meta_vals->processPath == NULL ? NULL : meta_vals->processPath);
+        if (app_status == APP_STATUS_BLOCKED)
+        {
+            result->actionType = FWP_ACTION_BLOCK;
+            result->flags |= FWPS_CLASSIFY_OUT_FLAG_ABSORB;
+            result->rights &= ~FWPS_RIGHT_ACTION_WRITE;
+        }
         return;
     }
 
@@ -6356,6 +6389,7 @@ static BOOL chek_app_cache(context_t context, const UINT64 process_id, int *res)
             } 
             else
             {
+                context->app_status_cache[i].time = timestamp;
                 *res = context->app_status_cache[i].status;
                 return TRUE;
             }
@@ -6372,7 +6406,7 @@ static void put_app_cache(context_t context, const UINT64 process_id, int status
 
     for (i = 0; i < APP_CACHE_SIZE; i++)
     {
-        if (context->app_status_cache[i].pid == 0)
+        if (context->app_status_cache[i].pid == 0 || context->app_status_cache[i].pid == process_id)
         {
             context->app_status_cache[i].pid = process_id;
             context->app_status_cache[i].status = status;
@@ -6401,25 +6435,32 @@ static int get_app_status(context_t context, const UINT64 process_id, FWP_BYTE_B
     app_t app_list;
     int i = 0;
     int status = APP_STATUS_UNSET;
-    char process_name[MAX_STRING_LENGTH];
     int cached_status = APP_STATUS_UNSET;
+    char process_name[MAX_STRING_LENGTH];
+    int blacklist_found = 0;
+    int whitelist_found = 0;
+    int blockedlist_found = 0;
+    UNICODE_STRING process_name_unicode;
     wchar_t c = 0;
 
+    process_name[0] = ANSI_NULL;
     KeAcquireInStackQueuedSpinLock(&context->lock, &lock_handle);
 #ifdef APP_CACHE_ENABLED
-    if (context->local_proxy_pid == process_id)
+    if (context->local_proxy_pid == process_id || SYSTEM_PID == process_id)
     {
         KeReleaseInStackQueuedSpinLock(&lock_handle);
         return APP_STATUS_ALLOWED;
     }
     if (chek_app_cache(context, process_id, &cached_status))
     {
+        DEBUG("PROCESS CACHE id, status %d %d ", (int)process_id, cached_status);
         KeReleaseInStackQueuedSpinLock(&lock_handle);
         return cached_status;
     }
 #endif 
     if (process_name_param == NULL)
     {
+        DEBUG("PROCESS id, status %d %d ", (int)process_id, cached_status);
         KeReleaseInStackQueuedSpinLock(&lock_handle);
         return cached_status;
     };
@@ -6429,17 +6470,10 @@ static int get_app_status(context_t context, const UINT64 process_id, FWP_BYTE_B
         c = *(&process_name_param->data[2 * i]);
         process_name[i] = (char)c;
     }
-    if (process_name_param->size < MAX_STRING_LENGTH)
-    {
-        process_name[process_name_param->size] = ANSI_NULL;
-    }
-    else 
-    {
-        process_name[MAX_STRING_LENGTH - 1] = ANSI_NULL;
-    }
 
-    list = &context->apps_blacklist;
-    while (list->Flink != &context->apps_blacklist)
+    process_name[i] = ANSI_NULL;
+    list = &context->apps_blocked;
+    while (list->Flink != &context->apps_blocked)
     {
         app_list = CONTAINING_RECORD(list->Blink, struct app_s, entry);
 
@@ -6447,45 +6481,70 @@ static int get_app_status(context_t context, const UINT64 process_id, FWP_BYTE_B
         {
             if (strstr(process_name, app_list->names[i]))
             {
-                status = APP_STATUS_BLOCKED;
+                blockedlist_found = 1;
             }
         }
         list = list->Flink;
     }
-
-    list = &context->apps_whitelist;
-    while (list->Flink != &context->apps_whitelist)
-    {
-        app_list = CONTAINING_RECORD(list->Blink, struct app_s, entry);
-
-        for (i = 0; i < APPS_CHUNK_SIZE && app_list->names[i][0] != '\0'; i++)
+    if (!blockedlist_found) {
+        list = &context->apps_blacklist;
+        while (list->Flink != &context->apps_blacklist)
         {
-            if (strstr(process_name, app_list->names[i]))
+            app_list = CONTAINING_RECORD(list->Blink, struct app_s, entry);
+
+            for (i = 0; i < APPS_CHUNK_SIZE && app_list->names[i][0] != '\0'; i++)
             {
-                status = APP_STATUS_ALLOWED;
+                if (strstr(process_name, app_list->names[i]))
+                {
+                    blacklist_found = 1;
+                }
+            }
+            list = list->Flink;
+        }
+
+        if (!blacklist_found) {
+            list = &context->apps_whitelist;
+            while (list->Flink != &context->apps_whitelist)
+            {
+                app_list = CONTAINING_RECORD(list->Blink, struct app_s, entry);
+
+                for (i = 0; i < APPS_CHUNK_SIZE && app_list->names[i][0] != '\0'; i++)
+                {
+                    if (strstr(process_name, app_list->names[i]))
+                    {
+                        whitelist_found = 1;
+                    }
+                }
+                list = list->Flink;
             }
         }
-        list = list->Flink;
+
     }
-    
-    if (context->blacklist_mode) 
+
+    if (&(&context->apps_whitelist)->Flink == &context->apps_whitelist)//blacklist mode
     {
-        if (status == APP_STATUS_UNSET) 
-        {
-            status = APP_STATUS_ALLOWED;
-        }
-        else if (status == APP_STATUS_BLOCKED) 
-        {
-            status = APP_STATUS_UNSET; //FILTER
-        }
+        DEBUG("Process status - BLACK LIST MODE");
+        whitelist_found = 1;
     } 
 
+    if (blacklist_found)
+    {
+        status = APP_STATUS_UNSET;
+    }
+    else if(whitelist_found)
+    {
+        status = APP_STATUS_ALLOWED;
+    }
+
+    if (blockedlist_found) 
+    {
+        status = APP_STATUS_BLOCKED;
+    }
 #ifdef APP_CACHE_ENABLED
     put_app_cache(context, process_id, status);
 #endif 
     KeReleaseInStackQueuedSpinLock(&lock_handle);
-
-    DEBUG("Process status %s %d", process_name, status);
+    DEBUG("Process status %s %d %d", process_name, status, (int)process_id);
     return status;
 }
 
@@ -6528,12 +6587,13 @@ static void insert_app(PLIST_ENTRY list, INT8* process_path)
     {
         if (app_list->names[i][0] == '\0')
         {
-            DEBUG("INSERT NEW APP INTO THE LIST %d, %s", i, process_path);
+         //   DEBUG("INSERT NEW APP INTO THE LIST %d, %s", i, process_path);
+            strcpy(app_list->names[i], process_path);
             break;
         }
         else if (strcmp(app_list->names[i], process_path) == 0) 
         {
-            DEBUG("App is already there %s", process_path);
+           // DEBUG("App is already there %s", process_path);
             return;
         }
     }
