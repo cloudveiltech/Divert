@@ -2362,6 +2362,18 @@ extern VOID windivert_close(IN WDFFILEOBJECT object)
     DEBUG("CLOSE: closed WinDivert context (context=%p)", context);
 }
 
+void free_applist(IN PLIST_ENTRY list) {
+    PLIST_ENTRY list_entry;
+    app_t app_list = NULL;
+    while (!IsListEmpty(list))
+    {
+        list_entry = RemoveHeadList(list);
+        app_list = CONTAINING_RECORD(list_entry, struct app_s, entry);
+        windivert_free(app_list);
+        DEBUG("APPLIST FREE LIST");
+    }
+}
+
 /*
  * WinDivert destroy routine.
  */
@@ -2383,6 +2395,11 @@ extern VOID windivert_destroy(IN WDFOBJECT object)
         return;
     }
     filter = context->filter;
+
+    free_applist(&context->apps_whitelist);
+    free_applist(&context->apps_blacklist);
+    free_applist(&context->apps_blocked);
+
     KeReleaseInStackQueuedSpinLock(&lock_handle);
     windivert_uninstall_callouts(context, WINDIVERT_CONTEXT_STATE_CLOSED);
     if (context->engine_handle != NULL)
@@ -3567,7 +3584,6 @@ windivert_ioctl_bad_flags:
                 goto windivert_ioctl_exit;
             }
 
-            DEBUG("PARAM %d", param);
             switch ((UINT32)param)
             {
                 case WINDIVERT_PARAM_QUEUE_LENGTH:
@@ -3620,24 +3636,14 @@ windivert_ioctl_bad_flags:
                     break;
                 case WINDIVERT_PARAM_CLEAN_APPS:
                     DEBUG("Cleaning APP LISTS");
-                    while (!IsListEmpty(&context->apps_whitelist))
-                    {
-                        RemoveHeadList(&context->apps_whitelist);
-                    }
-                    while (!IsListEmpty(&context->apps_blacklist))
-                    {
-                        RemoveHeadList(&context->apps_blacklist);
-                    }
-                    while (!IsListEmpty(&context->apps_blocked))
-                    {
-                        RemoveHeadList(&context->apps_blocked);
-                    }
+                    free_applist(&context->apps_whitelist);
+                    free_applist(&context->apps_blacklist);
+                    free_applist(&context->apps_blocked);
 #ifdef APP_CACHE_ENABLED
                     reset_app_cache(context);
 #endif
                     break;
                 case WINDIVERT_PARAM_ADD_APP_WHITELIST:       
-
                     insert_app(&context->apps_whitelist, ioctl->set_param.str);
                     break;
                 case WINDIVERT_PARAM_ADD_APP_BLACKLIST:
@@ -6521,7 +6527,7 @@ static int get_app_status(context_t context, const UINT64 process_id, FWP_BYTE_B
 
     }
 
-    if (&(&context->apps_whitelist)->Flink == &context->apps_whitelist)//blacklist mode
+    if (IsListEmpty(&context->apps_whitelist))//blacklist mode
     {
         DEBUG("Process status - BLACK LIST MODE");
         whitelist_found = 1;
@@ -6577,6 +6583,7 @@ static void insert_app(PLIST_ENTRY list, INT8* process_path)
     if(add_list_entry)
     {
         app_list = windivert_malloc(sizeof(struct app_s), FALSE);
+        DEBUG("APPLIST MALLOC CALLED");
         for (i = 0; i < APPS_CHUNK_SIZE; i++)
         {
             app_list->names[i][0] = '\0';
