@@ -6527,7 +6527,7 @@ static int get_app_status(context_t context, const UINT64 process_id, FWP_BYTE_B
 
     }
 
-    if (IsListEmpty(&context->apps_whitelist))//blacklist mode
+    if (!IsListEmpty(&context->apps_blacklist))//blacklist mode
     {
         DEBUG("Process status - BLACK LIST MODE");
         whitelist_found = 1;
