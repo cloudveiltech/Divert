@@ -35,20 +35,120 @@
 
 #include <ntifs.h>
 #include <ntddk.h>
-#include <fwpsk.h>
-#include <fwpmk.h>
 #include <wdf.h>
 #include <stdarg.h>
 #include <ntstrsafe.h>
 #include <mstcpip.h>
 
+#if !defined(_M_IX86) && !defined(_M_AMD64)
+#define NDIS640
+#endif
+
+
+#include <ndis/nblchecksum.h>
+#include <ndis/nblapi.h>
+#include <ndis/nbl.h>
+#include <fwpsk.h>
 #define INITGUID
 #define APP_CACHE_ENABLED
 #define SYSTEM_PID 4
 #include <guiddef.h>
+#include <fwpmk.h>
 
+#include <ndis/nblaccessors.h>
 #include "windivert_device.h"
 #include "./objfre_win7_amd64/amd64/windivert_log.h"
+
+MSTCPIP_INLINE
+VOID
+INETADDR_SET_PORT(_Inout_ PSOCKADDR a, _In_ USHORT Port)
+{
+    SS_PORT(a) = Port;
+}
+
+MSTCPIP_INLINE
+PUCHAR
+INETADDR_ADDRESS(_In_ CONST SOCKADDR* a)
+{
+    if (a->sa_family == AF_INET6) {
+        return (PUCHAR) & ((PSOCKADDR_IN6)a)->sin6_addr;
+    }
+    else {
+        ASSERT(a->sa_family == AF_INET);
+        return (PUCHAR) & ((PSOCKADDR_IN)a)->sin_addr;
+    }
+}
+
+MSTCPIP_INLINE
+VOID
+INETADDR_SET_ADDRESS(
+    _Inout_ PSOCKADDR a,
+    _In_reads_(_Inexpressible_("Varies")) CONST UCHAR* Address)
+{
+    if (a->sa_family == AF_INET6) {
+        ((PSOCKADDR_IN6)a)->sin6_addr = *((CONST IN6_ADDR*)Address);
+    }
+    else {
+        ASSERT(a->sa_family == AF_INET);
+        ((PSOCKADDR_IN)a)->sin_addr = *((CONST IN_ADDR*)Address);
+    }
+}
+
+#define IN4ADDR_LOOPBACK 0x0100007f
+#define IN4ADDR_ANY INADDR_ANY
+
+MSTCPIP_INLINE
+VOID
+IN4ADDR_SETLOOPBACK(_Out_ PSOCKADDR_IN a)
+{
+    a->sin_family = AF_INET;
+    a->sin_port = 0;
+    a->sin_addr.s_addr = IN4ADDR_LOOPBACK;
+    memset(a->sin_zero, 0, sizeof(a->sin_zero));
+}
+
+
+MSTCPIP_INLINE
+VOID
+INETADDR_SETLOOPBACK(_Inout_ PSOCKADDR a)
+{
+    if (a->sa_family == AF_INET6) {
+        IN6ADDR_SETLOOPBACK((PSOCKADDR_IN6)a);
+    }
+    else {
+        ASSERT(a->sa_family == AF_INET);
+        IN4ADDR_SETLOOPBACK((PSOCKADDR_IN)a);
+    }
+}
+
+MSTCPIP_INLINE
+BOOLEAN
+IN4_IS_ADDR_UNSPECIFIED(_In_ CONST IN_ADDR* a)
+{
+    return (BOOLEAN)(a->s_addr == IN4ADDR_ANY);
+}
+
+MSTCPIP_INLINE
+BOOLEAN
+IN4ADDR_ISANY(_In_ CONST SOCKADDR_IN* a)
+{
+    ASSERT(a->sin_family == AF_INET);
+    return IN4_IS_ADDR_UNSPECIFIED(&a->sin_addr);
+}
+
+
+MSTCPIP_INLINE
+BOOLEAN
+INETADDR_ISANY(_In_ CONST SOCKADDR* a)
+{
+    if (a->sa_family == AF_INET6) {
+        return IN6ADDR_ISANY((CONST SOCKADDR_IN6*)a);
+    }
+    else {
+        ASSERT(a->sa_family == AF_INET);
+        return IN4ADDR_ISANY((CONST SOCKADDR_IN*)a);
+    }
+}
 
 extern NTSTATUS WINAPI ZwQueryInformationProcess(
     _In_      HANDLE           ProcessHandle,
