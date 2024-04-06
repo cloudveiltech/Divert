@@ -49,9 +49,14 @@
 #include "windivert.h"
 #include "windivert_device.h"
 
+#define DRIVER_TYPE_X86 1
+#define DRIVER_TYPE_X64 2
+#define DRIVER_TYPE_ARM64 3
+
 #define WINDIVERT_DRIVER_NAME           L"WinDivert"
 #define WINDIVERT_DRIVER32_SYS          L"\\" WINDIVERT_DRIVER_NAME L"32.sys"
 #define WINDIVERT_DRIVER64_SYS          L"\\" WINDIVERT_DRIVER_NAME L"64.sys"
+#define WINDIVERT_DRIVERARM64_SYS          L"\\" WINDIVERT_DRIVER_NAME L"ARM64.sys"
 #define WINDIVERT_VERSION_MAJOR_MIN     2
 
 #ifndef ERROR_DRIVER_FAILED_PRIOR_UNLOAD
@@ -131,7 +136,7 @@ static BOOL WinDivertGetData(const VOID *packet, UINT packet_len, INT min,
 /*
  * Prototypes.
  */
-static BOOLEAN WinDivertUse32Bit(void);
+static int WinDivertGetDriverType(void);
 static BOOLEAN WinDivertGetDriverFileName(LPWSTR sys_str);
 static BOOLEAN WinDivertDriverInstall(VOID);
 
@@ -198,20 +203,27 @@ BOOL APIENTRY WinDivertDllEntry(HANDLE module0, DWORD reason, LPVOID reserved)
 /*
  * Test if we should use the 32-bit or 64-bit driver.
  */
-static BOOLEAN WinDivertUse32Bit(void)
+static int WinDivertGetDriverType(void)
 {
-    BOOL is_wow64;
+    USHORT machine;
+    USHORT unused;
 
-    if (sizeof(void *) == sizeof(UINT64))
-    {
-        return FALSE;
-    }
-    if (!IsWow64Process(GetCurrentProcess(), &is_wow64))
+    if (!IsWow64Process2(GetCurrentProcess(), &unused, &machine))
     {
         // Just guess:
-        return FALSE;
+        return DRIVER_TYPE_X64;
     }
-    return (is_wow64? FALSE: TRUE);
+   
+    if(machine == IMAGE_FILE_MACHINE_AMD64)
+    {
+        return DRIVER_TYPE_X64;
+    }
+    else if (machine == IMAGE_FILE_MACHINE_ARM64)
+    {
+        return DRIVER_TYPE_ARM64;
+    }
+
+    return DRIVER_TYPE_X86;
 }
 
 /*
@@ -220,11 +232,11 @@ static BOOLEAN WinDivertUse32Bit(void)
 static BOOLEAN WinDivertGetDriverFileName(LPWSTR sys_str)
 {
     size_t dir_len, sys_len;
-    BOOLEAN is_32bit;
+    int driver_type;
 
-    is_32bit = WinDivertUse32Bit();
+    driver_type = WinDivertGetDriverType();
 
-    if (is_32bit)
+    if (driver_type == DRIVER_TYPE_X86)
     {
         if (!WinDivertStrLen(WINDIVERT_DRIVER32_SYS, MAX_PATH, &sys_len))
         {
@@ -232,9 +244,17 @@ static BOOLEAN WinDivertGetDriverFileName(LPWSTR sys_str)
             return FALSE;
         }
     }
-    else
+    else if(driver_type == DRIVER_TYPE_X64)
     {
         if (!WinDivertStrLen(WINDIVERT_DRIVER64_SYS, MAX_PATH, &sys_len))
+        {
+            SetLastError(ERROR_BAD_PATHNAME);
+            return FALSE;
+        }
+    }
+    else
+    {
+        if (!WinDivertStrLen(WINDIVERT_DRIVERARM64_SYS, MAX_PATH, &sys_len))
         {
             SetLastError(ERROR_BAD_PATHNAME);
             return FALSE;
@@ -254,7 +274,8 @@ static BOOLEAN WinDivertGetDriverFileName(LPWSTR sys_str)
         return FALSE;
     }
     if (!WinDivertStrCpy(sys_str + dir_len, MAX_PATH-dir_len-1,
-            (is_32bit? WINDIVERT_DRIVER32_SYS: WINDIVERT_DRIVER64_SYS)))
+            (driver_type == DRIVER_TYPE_X86 ? WINDIVERT_DRIVER32_SYS: 
+                (driver_type == DRIVER_TYPE_X64 ? WINDIVERT_DRIVER64_SYS : WINDIVERT_DRIVERARM64_SYS))))
     {
         SetLastError(ERROR_BAD_PATHNAME);
         return FALSE;
